@@ -1,0 +1,13 @@
+fixtures/
+node_modules
+verify-150000-.out
+verify-200000.out
+verify-250000.out
+verify-300000.out
+verify-350000.out
+verify-400000.out
+verify-450000.out
+verify-500000.out
+verify-550000.out
+verify-600000.out
+verify-head.out
