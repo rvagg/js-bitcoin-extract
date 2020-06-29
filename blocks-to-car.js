@@ -3,19 +3,20 @@
 const assert = require('assert')
 const path = require('path')
 const fs = require('fs')
-const ipldBitcoin = require('ipld-bitcoin')
-const multiformats = require('multiformats/basics')
-multiformats.add(require('@ipld/dag-cbor'))
-multiformats.add(ipldBitcoin)
-const CarDatastore = require('datastore-car')(multiformats)
-const { args, run, files, readFiles, fileExists } = require('./common')
-const { dataDir } = require('./config')
-const fauxWitCommitListFile = path.join(dataDir, 'faux-witness-commitment-blocks.json')
+const {
+  ipld,
+  CarDatastore,
+  multiformats,
+  cleanBlock,
+  args,
+  run,
+  files,
+  readFiles,
+  fileExists
+} = require('./common')
+const { type /* , dataDir */ } = require('./config')
 
-function cleanBlock (block) {
-  'confirmations chainwork height mediantime nextblockhash'.split(' ').forEach((p) => delete block[p])
-  return block
-}
+// const fauxWitCommitListFile = path.join(dataDir, 'faux-witness-commitment-blocks.json')
 
 // round difficulty to 2 decimal places, it's a calculated value
 function roundDifficulty (block) {
@@ -27,6 +28,7 @@ function isSegWit (block) {
   return block.tx[0].txid !== block.tx[0].hash
 }
 
+/*
 async function recordFauxWitCommit (index, hash) {
   let list = []
   try {
@@ -35,6 +37,7 @@ async function recordFauxWitCommit (index, hash) {
   list.push({ index, hash })
   await fs.promises.writeFile(fauxWitCommitListFile, JSON.stringify(list, null, 2), 'ascii')
 }
+*/
 
 async function generateCar (verify, quickVerify, index) {
   const { jsonFile, binFile, hash } = await files(index)
@@ -55,11 +58,11 @@ async function generateCar (verify, quickVerify, index) {
     // write
     const outStream = fs.createWriteStream(tmpCarFile)
     const writeDs = await CarDatastore.writeStream(outStream)
-    const decoded = ipldBitcoin.deserializeFullBitcoinBinary(bin)
-    rootCid = await ipldBitcoin.blockToCar(multiformats, writeDs, decoded)
+    const decoded = ipld[type === 'bitcoin' ? 'deserializeFullBitcoinBinary' : 'deserializeFullZcashBinary'](bin)
+    rootCid = await ipld.blockToCar(multiformats, writeDs, decoded)
     process.stdout.write('w')
   } else {
-    rootCid = ipldBitcoin.blockHashToCID(multiformats, hash)
+    rootCid = ipld.blockHashToCID(multiformats, hash)
   }
 
   // verify
@@ -69,8 +72,9 @@ async function generateCar (verify, quickVerify, index) {
       const block = await carDs.get(cid)
       return block
     } catch (err) {
+      console.log(`failed to load ${cid} (${cid.code})`)
       if (cid.code === 0xb2) { // probably faux witness commitment
-        await recordFauxWitCommit(index, hash)
+        // await recordFauxWitCommit(index, hash)
       }
       throw err
     }
@@ -79,17 +83,17 @@ async function generateCar (verify, quickVerify, index) {
   roundDifficulty(cleanBlock(expected))
 
   if (quickVerify) {
-    const header = multiformats.decode(await loader(rootCid), 'bitcoin-block')
+    const header = multiformats.decode(await loader(rootCid), `${type}-block`)
     roundDifficulty(header)
     delete expected.tx
     delete expected.nTx
     delete expected.size
     delete expected.strippedsize
     delete expected.weight
-    assert.strictEqual(header.tx.code, 0xb1, 'tx CID')
+    assert.strictEqual(header.tx.code, type === 'bitcoin' ? 0xb1 : 0xc1, 'tx CID')
     assert(await carDs.has(header.tx), 'tx merkle root exists')
     if (index !== 0) {
-      assert.strictEqual(header.parent.code, 0xb0, 'parent CID')
+      assert.strictEqual(header.parent.code, type === 'bitcoin' ? 0xb0 : 0xc0, 'parent CID')
     } else {
       assert.strictEqual(header.parent, null, 'genesis parent is null')
     }
@@ -97,13 +101,13 @@ async function generateCar (verify, quickVerify, index) {
     delete header.parent
     assert.deepStrictEqual(header, expected, 'round-trip object form matches for header')
   } else {
-    const { deserialized, binary } = await ipldBitcoin.assemble(multiformats, loader, rootCid)
+    const { deserialized, binary } = await ipld.assemble(multiformats, loader, rootCid)
 
     assert.deepStrictEqual(binary, bin, 'round-trip binary form matches')
 
     roundDifficulty(deserialized)
 
-    if (isSegWit(expected)) {
+    if (type === 'bitcoin' && isSegWit(expected)) {
       // nonce isn't in the bitcoin-cli output (yet)
       const nonce = deserialized.tx[0].vin[0].txinwitness
       assert(Array.isArray(nonce))
@@ -113,7 +117,18 @@ async function generateCar (verify, quickVerify, index) {
       delete deserialized.tx[0].vin[0].txinwitness
     }
 
-    assert.deepStrictEqual(deserialized, expected, 'round-trip object form matches')
+    // See https://github.com/zcash/zcash/pull/4579
+    if (type === 'zcash') {
+      deserialized.tx.forEach((tx) => {
+        if (tx.vjoinsplit.length > 0) {
+          assert(/^[0-9a-f]{64}$/.test(tx.joinSplitPubKey))
+          assert(/^[0-9a-f]{128}$/.test(tx.joinSplitSig))
+          delete tx.joinSplitPubKey
+          delete tx.joinSplitSig
+        }
+      })
+    }
+    assert.deepStrictEqual(deserialized, expected) //, 'round-trip object form matches')
   }
 
   process.stdout.write('v')

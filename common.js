@@ -4,7 +4,13 @@ const path = require('path')
 const assert = require('assert')
 const { spawn } = require('child_process')
 const bl = require('bl')
-const { bitcoinCli, dataDir } = require('./config')
+const { type, bitcoinCli, dataDir } = require('./config')
+
+const ipld = require(type === 'bitcoin' ? '@ipld/bitcoin' : '@ipld/zcash')
+const multiformats = require('multiformats/basics.js')
+multiformats.add(require('@ipld/dag-cbor'))
+multiformats.add(ipld)
+const CarDatastore = require('datastore-car')(multiformats)
 
 function assertHash (hash) {
   assert(typeof hash === 'string')
@@ -93,12 +99,18 @@ async function maxDir (dir) {
   const ls = (await fs.readdir(dir))
     .map((d) => d.padStart(7, '0')).filter(Boolean)
   ls.sort()
+  if (!ls.length) {
+    return -1
+  }
   const max = ls[ls.length - 1].replace(/^0+/g, '')
   return parseInt(max, 10)
 }
 
 async function getBestBlockIndex () {
   const tld = await maxDir(path.join(dataDir, 'index'))
+  if (tld < 0) {
+    return tld
+  }
   const max = await maxDir(path.join(dataDir, 'index', String(tld)))
   return max
 }
@@ -112,7 +124,7 @@ async function args (argv, includeHash) {
     limit = bestBlockIndex
   }
   if (includeHash) {
-    if (start > 0) {
+    if (start == argv[2]) { // eslint-disable-line
       hash = await getBlockHash(start)
     } else if (!start || start.length !== 64) {
       hash = await getTipHash()
@@ -160,6 +172,15 @@ async function run (start, limit, processBlock, progress = true) {
   }
 }
 
+function cleanBlock (block) {
+  if (type === 'bitcoin') {
+    'confirmations chainwork height mediantime nextblockhash'.split(' ').forEach((p) => delete block[p])
+  } else if (type === 'zcash') {
+    'anchor chainhistoryroot root valuePools confirmations chainwork height nextblockhash'.split(' ').forEach((p) => delete block[p])
+  }
+  return block
+}
+
 module.exports.args = args
 module.exports.run = run
 module.exports.execBitcoinCli = execBitcoinCli
@@ -170,3 +191,7 @@ module.exports.fileExists = fileExists
 module.exports.mkdir = mkdir
 module.exports.hashToDir = hashToDir
 module.exports.assertHash = assertHash
+module.exports.ipld = ipld
+module.exports.CarDatastore = CarDatastore
+module.exports.cleanBlock = cleanBlock
+module.exports.multiformats = multiformats

@@ -7,14 +7,8 @@ const assert = require('assert')
 const fs = require('fs').promises
 fs.createReadStream = require('fs').createReadStream
 const path = require('path')
-const ipldBitcoin = require('ipld-bitcoin')
-const multiformats = require('multiformats/basics')
-multiformats.add(ipldBitcoin)
-multiformats.add(require('@ipld/dag-cbor'))
-const CarDatastore = require('datastore-car')(multiformats)
-const { blockHashToCID } = require('ipld-bitcoin')
-const { args, run, files, mkdir, hashToDir } = require('./common')
-const { dataDir } = require('./config')
+const { ipld, multiformats, CarDatastore, args, run, files, mkdir, hashToDir } = require('./common')
+const { type, dataDir } = require('./config')
 
 const carHeaderSize = 60
 const chunkIndexDir = path.join(dataDir, 'chunks/index')
@@ -89,7 +83,7 @@ async function consolidateChunk (num, index, carOutFile) {
   let chadv = 0
   let ii = 0
   for (const { hash } of index.reverse()) {
-    const hashCid = blockHashToCID(multiformats, hash)
+    const hashCid = ipld.blockHashToCID(multiformats, hash)
     if (ii++ === 0) {
       await carOut.setRoots([hashCid])
     }
@@ -139,7 +133,7 @@ async function verify (start) {
   console.log('Starting at', start)
   const index = (await lsIndex()).filter((ii) => ii.start <= start)
 
-  let expectedRoot = ipldBitcoin.blockHashToCID(multiformats, (await files(start)).hash)
+  let expectedRoot = ipld.blockHashToCID(multiformats, (await files(start)).hash)
 
   for (const chunk of index.reverse()) {
     const { hash } = await files(chunk.end)
@@ -147,7 +141,7 @@ async function verify (start) {
     const carDs = await CarDatastore.readFileIndexed(chunk.path)
     const loader = async (cid) => carDs.get(cid)
     // check that the CAR has a proper root
-    assert.deepStrictEqual((await carDs.getRoots()).map((c) => c.toString()), [ipldBitcoin.blockHashToCID(multiformats, hash).toString()])
+    assert.deepStrictEqual((await carDs.getRoots()).map((c) => c.toString()), [ipld.blockHashToCID(multiformats, hash).toString()])
     process.stdout.write('Done, processing ... ')
 
     let chadv = 0
@@ -157,14 +151,14 @@ async function verify (start) {
     while (ii >= chunk.start) {
       const { binFile, hash } = await files(ii)
       const expectedBin = await fs.readFile(binFile)
-      const rootCid = ipldBitcoin.blockHashToCID(multiformats, hash)
+      const rootCid = ipld.blockHashToCID(multiformats, hash)
 
-      const header = multiformats.decode(await carDs.get(rootCid), 'bitcoin-block')
+      const header = multiformats.decode(await carDs.get(rootCid), `${type}-block`)
       assert.strictEqual(rootCid.toString(), expectedRoot.toString())
       expectedRoot = header.parent
       // verify
-      const { binary } = await ipldBitcoin.assemble(multiformats, loader, rootCid)
-      assert.strictEqual(binary.compare(expectedBin), 0, 'round-trip binary form matches')
+      const { binary } = await ipld.assemble(multiformats, loader, rootCid)
+      assert.strictEqual(binary.compare(expectedBin), 0, `round-trip binary form matches for block #${ii}`)
       ii--
 
       const ind = ii - chunk.start
